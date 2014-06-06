@@ -42,18 +42,23 @@ final class RemoteDevices {
     private static BluetoothAdapter mAdapter;
     private static AdapterService mAdapterService;
     private static ArrayList<BluetoothDevice> mSdpTracker;
+    private static ArrayList<BluetoothDevice> mSdpMasTracker;	// @daniel
 
     private Object mObject = new Object();
 
     private static final int UUID_INTENT_DELAY = 6000;
     private static final int MESSAGE_UUID_INTENT = 1;
-
+// @daniel
+    private static final int MAS_INSTANCE_INTENT_DELAY = 6000;
+    private static final int MESSAGE_MAS_INSTANCE_INTENT = 2;
+// @
     private HashMap<BluetoothDevice, DeviceProperties> mDevices;
 
     RemoteDevices(AdapterService service) {
         mAdapter = BluetoothAdapter.getDefaultAdapter();
         mAdapterService = service;
         mSdpTracker = new ArrayList<BluetoothDevice>();
+        mSdpMasTracker = new ArrayList<BluetoothDevice>();	// @daniel
         mDevices = new HashMap<BluetoothDevice, DeviceProperties>();
     }
 
@@ -103,8 +108,10 @@ final class RemoteDevices {
         private short mRssi;
         private ParcelUuid[] mUuids;
         private int mDeviceType;
+        private int retValue;		// @daniel
         private String mAlias;
         private int mBondState;
+        private boolean mTrustValue;	// @daniel
 
         DeviceProperties() {
             mBondState = BluetoothDevice.BOND_NONE;
@@ -182,7 +189,31 @@ final class RemoteDevices {
                     AbstractionLayer.BT_PROPERTY_REMOTE_FRIENDLY_NAME, mAlias.getBytes());
             }
         }
+// @daniel
+        /**
+         * @return the mtrustValue
+         */
+        boolean getTrust() {
+            synchronized (mObject) {
+                debugLog("getTrust. returning: "+mTrustValue);
+                return mTrustValue;
+            }
+        }
 
+        /**
+         * @param mtrustValue, the trust value to set
+         */
+        void setTrust(boolean trustVal) {
+            int mTempTrustValue;
+            mTempTrustValue = trustVal? 1: 0;
+            mTrustValue = trustVal;
+            synchronized (mObject) {
+                mAdapterService.setDevicePropertyNative(mAddress,
+                    AbstractionLayer.BT_PROPERTY_REMOTE_TRUST_VALUE,
+                    Utils.intToByteArray(mTempTrustValue));
+            }
+        }
+// @
         /**
          * @param mBondState the mBondState to set
          */
@@ -292,6 +323,14 @@ final class RemoteDevices {
                             // The device type from hal layer, defined in bluetooth.h,
                             // matches the type defined in BluetoothDevice.java
                             device.mDeviceType = Utils.byteArrayToInt(val);
+                            break;
+                        case AbstractionLayer.BT_PROPERTY_REMOTE_TRUST_VALUE:
+                            // The trust Value set for remote device stored in nvram
+                            device.retValue = Utils.byteArrayToInt(val);
+                            if(device.retValue == 1)
+                                device.mTrustValue = true;
+                            else
+                                device.mTrustValue = false;
                             break;
                         case AbstractionLayer.BT_PROPERTY_REMOTE_RSSI:
                             // RSSI from hal is in one byte
@@ -431,7 +470,18 @@ final class RemoteDevices {
         //mAdapterService.getDevicePropertyNative(Utils.getBytesFromAddress(device.getAddress()), AbstractionLayer.BT_PROPERTY_UUIDS);
         mAdapterService.getRemoteServicesNative(Utils.getBytesFromAddress(device.getAddress()));
     }
+// @daniel
+    void fetchMasInstances(BluetoothDevice device) {
+        if (mSdpMasTracker.contains(device)) return;
+        mSdpMasTracker.add(device);
 
+        Message message = mHandler.obtainMessage(MESSAGE_MAS_INSTANCE_INTENT);
+        message.obj = device;
+        mHandler.sendMessageDelayed(message, MAS_INSTANCE_INTENT_DELAY);
+
+        mAdapterService.getRemoteMasInstancesNative(Utils.getBytesFromAddress(device.getAddress()));
+    }
+// @
     private final Handler mHandler = new Handler() {
         @Override
         public void handleMessage(Message msg) {

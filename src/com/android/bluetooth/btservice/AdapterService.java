@@ -776,7 +776,31 @@ public class AdapterService extends Service {
             if (service == null) return false;
             return service.setRemoteAlias(device, name);
         }
+// @daniel
+        public boolean getRemoteTrust(BluetoothDevice device) {
+            Log.d(TAG,"getRemoteTrust");
+            if (!Utils.checkCaller()) {
+                Log.w(TAG,"getRemoteTrust(): not allowed for non-active user");
+                return false;
+            }
 
+            AdapterService service = getService();
+            if (service == null) return false;
+            return service.getRemoteTrust(device);
+        }
+
+        public boolean setRemoteTrust(BluetoothDevice device, boolean trustValue) {
+            Log.d(TAG,"setRemoteTrust to "+ trustValue);
+            if (!Utils.checkCaller()) {
+                Log.w(TAG,"setRemoteTrust(): not allowed for non-active user");
+                return false;
+            }
+
+            AdapterService service = getService();
+            if (service == null) return false;
+            return service.setRemoteTrust(device, trustValue);
+        }
+// @
         public int getRemoteClass(BluetoothDevice device) {
             if (!Utils.checkCaller()) {
                 Log.w(TAG,"getRemoteClass(): not allowed for non-active user");
@@ -809,7 +833,18 @@ public class AdapterService extends Service {
             if (service == null) return false;
             return service.fetchRemoteUuids(device);
         }
+// @daniel
+        public boolean fetchRemoteMasInstances(BluetoothDevice device) {
+            if (!Utils.checkCaller()) {
+                Log.w(TAG,"fetchMasInstances(): not allowed for non-active user");
+                return false;
+            }
 
+            AdapterService service = getService();
+            if (service == null) return false;
+            return service.fetchRemoteMasInstances(device);
+        }
+// @
         public boolean setPin(BluetoothDevice device, boolean accept, int len, byte[] pinCode) {
             if (!Utils.checkCaller()) {
                 Log.w(TAG,"setPin(): not allowed for non-active user");
@@ -873,7 +908,30 @@ public class AdapterService extends Service {
             if (service == null) return null;
             return service.createSocketChannel(type, serviceName, uuid, port, flag);
         }
+// @daniel
+        public int setSocketOpt(int type, int channel, int optionName, byte [] optionVal,
+                                                    int optionLen) {
+            if (!Utils.checkCaller()) {
+                Log.w(TAG,"setSocketOpt(): not allowed for non-active user");
+                return -1;
+            }
 
+            AdapterService service = getService();
+            if (service == null) return -1;
+            return service.setSocketOpt(type, channel, optionName, optionVal, optionLen);
+        }
+
+        public int getSocketOpt(int type, int channel, int optionName, byte [] optionVal) {
+            if (!Utils.checkCaller()) {
+                Log.w(TAG,"getSocketOpt(): not allowed for non-active user");
+                return -1;
+            }
+
+            AdapterService service = getService();
+            if (service == null) return -1;
+            return service.getSocketOpt(type, channel, optionName, optionVal);
+        }
+// @
         public boolean configHciSnoopLog(boolean enable) {
             if ((Binder.getCallingUid() != Process.SYSTEM_UID) &&
                 (!Utils.checkCaller())) {
@@ -1249,7 +1307,22 @@ public class AdapterService extends Service {
         deviceProp.setAlias(name);
         return true;
     }
+// @daniel
+    boolean getRemoteTrust(BluetoothDevice device) {
+        enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
+        DeviceProperties deviceProp = mRemoteDevices.getDeviceProperties(device);
+        if (deviceProp == null) return false;
+        return deviceProp.getTrust();
+    }
 
+    boolean setRemoteTrust(BluetoothDevice device, boolean trustValue) {
+        enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
+        DeviceProperties deviceProp = mRemoteDevices.getDeviceProperties(device);
+        if (deviceProp == null) return false;
+        deviceProp.setTrust(trustValue);
+        return true;
+    }
+// @
      int getRemoteClass(BluetoothDevice device) {
         enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
         DeviceProperties deviceProp = mRemoteDevices.getDeviceProperties(device);
@@ -1270,7 +1343,13 @@ public class AdapterService extends Service {
         mRemoteDevices.fetchUuids(device);
         return true;
     }
-
+// @daniel
+      boolean fetchRemoteMasInstances(BluetoothDevice device) {
+         enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
+         mRemoteDevices.fetchMasInstances(device);
+         return true;
+     }
+// @
      boolean setPin(BluetoothDevice device, boolean accept, int len, byte[] pinCode) {
         enforceCallingOrSelfPermission(BLUETOOTH_ADMIN_PERM,
                                        "Need BLUETOOTH ADMIN permission");
@@ -1341,7 +1420,20 @@ public class AdapterService extends Service {
         }
         return ParcelFileDescriptor.adoptFd(fd);
     }
+// @daniel
+     int setSocketOpt(int type, int channel, int optionName, byte [] optionVal,
+             int optionLen) {
+        enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
 
+        return setSocketOptNative(type, channel, optionName, optionVal, optionLen);
+     }
+
+     int getSocketOpt(int type, int channel, int optionName, byte [] optionVal) {
+        enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
+
+        return getSocketOptNative(type, channel, optionName, optionVal);
+     }
+// @
     boolean configHciSnoopLog(boolean enable) {
         enforceCallingOrSelfPermission(BLUETOOTH_PERM, "Need BLUETOOTH permission");
         return configHciSnoopLogNative(enable);
@@ -1414,13 +1506,20 @@ public class AdapterService extends Service {
             accept, int passkey);
 
     /*package*/ native boolean getRemoteServicesNative(byte[] address);
+    /*package*/ native boolean getRemoteMasInstancesNative(byte[] address);
 
     // TODO(BT) move this to ../btsock dir
     private native int connectSocketNative(byte[] address, int type,
                                            byte[] uuid, int port, int flag);
     private native int createSocketChannelNative(int type, String serviceName,
                                                  byte[] uuid, int port, int flag);
+// @daniel
+    private native int setSocketOptNative(int fd, int type, int optionName,
+                                byte [] optionVal, int optionLen);
 
+    private native int  getSocketOptNative(int fd, int type, int optionName,
+                                byte [] optionVal);
+// @
     /*package*/ native boolean configHciSnoopLogNative(boolean enable);
 
     protected void finalize() {

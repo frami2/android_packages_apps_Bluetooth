@@ -67,6 +67,10 @@ public class HidService extends ProfileService {
     private static final int MESSAGE_SET_REPORT = 10;
     private static final int MESSAGE_SEND_DATA = 11;
     private static final int MESSAGE_ON_VIRTUAL_UNPLUG = 12;
+    private static final int MESSAGE_GET_IDLE_TIME = 13;
+    private static final int MESSAGE_ON_GET_IDLE_TIME = 14;
+    private static final int MESSAGE_SET_IDLE_TIME = 15;
+    private static final int MESSAGE_SET_PRIORITY = 16;
 
     static {
         classInitNative();
@@ -375,6 +379,19 @@ public class HidService extends ProfileService {
             if (service == null) return false;
             return service.sendData(device, report);
         }
+// @daniel
+        public boolean setIdleTime(BluetoothDevice device, byte idleTime) {
+            HidService service = getService();
+            if (service == null) return false;
+            return service.setIdleTime(device, idleTime);
+        }
+
+        public boolean getIdleTime(BluetoothDevice device) {
+            HidService service = getService();
+            if (service == null) return false;
+            return service.getIdleTime(device);
+        }
+// @
     };
 
     //APIs
@@ -537,7 +554,35 @@ public class HidService extends ProfileService {
         mHandler.sendMessage(msg);
         return true ;*/
     }
-    
+// @daniel
+    boolean getIdleTime(BluetoothDevice device) {
+        enforceCallingOrSelfPermission(BLUETOOTH_ADMIN_PERM,
+                                       "Need BLUETOOTH_ADMIN permission");
+        int state = this.getConnectionState(device);
+        if (state != BluetoothInputDevice.STATE_CONNECTED) {
+            return false;
+        }
+        Message msg = mHandler.obtainMessage(MESSAGE_GET_IDLE_TIME,device);
+        mHandler.sendMessage(msg);
+        return true;
+    }
+
+    boolean setIdleTime(BluetoothDevice device, byte idleTime) {
+        enforceCallingOrSelfPermission(BLUETOOTH_ADMIN_PERM,
+                                       "Need BLUETOOTH_ADMIN permission");
+        int state = this.getConnectionState(device);
+        if (state != BluetoothInputDevice.STATE_CONNECTED) {
+            return false;
+        }
+        Message msg = mHandler.obtainMessage(MESSAGE_SET_IDLE_TIME);
+        msg.obj = device;
+        Bundle data = new Bundle();
+        data.putByte(BluetoothInputDevice.EXTRA_IDLE_TIME, idleTime);
+        msg.setData(data);
+        mHandler.sendMessage(msg);
+        return true;
+    }
+// @
     private void onGetProtocolMode(byte[] address, int mode) {
         Message msg = mHandler.obtainMessage(MESSAGE_ON_GET_PROTOCOL_MODE);
         msg.obj = address;
