@@ -1,3 +1,3 @@
 android_packages_apps_Bluetooth
 ===============================
-Bluetooth app from Omnirom. Modified to support Bluez for cm-11.0
+Bluetooth app from AOSP. Modified to support Bluez for cm-12.0

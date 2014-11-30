@@ -17,6 +17,7 @@
 #define LOG_TAG "BluetoothServiceJni"
 #include "com_android_bluetooth.h"
 #include "hardware/bt_sock.h"
+#include "hardware/bt_mce.h"
 #include "utils/Log.h"
 #include "utils/misc.h"
 #include "cutils/properties.h"
@@ -41,11 +42,18 @@ static jmethodID method_sspRequestCallback;
 static jmethodID method_bondStateChangeCallback;
 static jmethodID method_aclStateChangeCallback;
 static jmethodID method_discoveryStateChangeCallback;
+static jmethodID method_setWakeAlarm;
+static jmethodID method_acquireWakeLock;
+static jmethodID method_releaseWakeLock;
+static jmethodID method_deviceMasInstancesFoundCallback;
+static jmethodID method_energyInfo;
 
 static const bt_interface_t *sBluetoothInterface = NULL;
 static const btsock_interface_t *sBluetoothSocketInterface = NULL;
+static const btmce_interface_t *sBluetoothMceInterface = NULL;
 static JNIEnv *callbackEnv = NULL;
 
+static jobject sJniAdapterServiceObj;
 static jobject sJniCallbacksObj;
 static jfieldID sJniCallbacksField;
 
@@ -345,22 +353,6 @@ static void discovery_state_changed_callback(bt_discovery_state_t state) {
     checkAndClearExceptionFromCallback(callbackEnv, __FUNCTION__);
 }
 
-static void wake_state_changed_callback(bt_state_t state) {
-
-    if (!checkCallbackThread()) {
-       ALOGE("Callback: '%s' is not called on the correct thread", __FUNCTION__);
-       return;
-    }
-/*
-    ALOGV("%s: WakeState:%d ", __FUNCTION__, state);
-
-    callbackEnv->CallVoidMethod(sJniCallbacksObj, method_wakeStateChangeCallback,
-                                (jint)state);
-
-    checkAndClearExceptionFromCallback(callbackEnv, __FUNCTION__);
-*/
-}
-
 static void pin_request_callback(bt_bdaddr_t *bd_addr, bt_bdname_t *bdname, uint32_t cod, uint8_t secure) {
     jbyteArray addr, devname;
     if (!checkCallbackThread()) {
@@ -455,28 +447,236 @@ static void le_test_mode_recv_callback (bt_status_t status, uint16_t packet_coun
 
     ALOGV("%s: status:%d packet_count:%d ", __FUNCTION__, status, packet_count);
 }
-bt_callbacks_t sBluetoothCallbacks = {
+
+static void energy_info_recv_callback(bt_activity_energy_info *p_energy_info)
+{
+    if (!checkCallbackThread()) {
+       ALOGE("Callback: '%s' is not called on the correct thread", __FUNCTION__);
+       return;
+    }
+
+    callbackEnv->CallVoidMethod(sJniAdapterServiceObj, method_energyInfo, p_energy_info->status,
+        p_energy_info->ctrl_state, p_energy_info->tx_time, p_energy_info->rx_time,
+        p_energy_info->idle_time, p_energy_info->energy_used);
+
+    checkAndClearExceptionFromCallback(callbackEnv, __FUNCTION__);
+}
+
+static bt_callbacks_t sBluetoothCallbacks = {
     sizeof(sBluetoothCallbacks),
     adapter_state_change_callback,
     adapter_properties_callback,
     remote_device_properties_callback,
     device_found_callback,
     discovery_state_changed_callback,
-    wake_state_changed_callback,
     pin_request_callback,
     ssp_request_callback,
     bond_state_changed_callback,
     acl_state_changed_callback,
     callback_thread_event,
     dut_mode_recv_callback,
-    NULL,
+
     le_test_mode_recv_callback,
-    NULL,
-    NULL,
-    NULL,
+    energy_info_recv_callback
+    ,NULL,
     NULL,
     NULL,
     NULL
+};
+
+// The callback to call when the wake alarm fires.
+static alarm_cb sAlarmCallback;
+
+// The data to pass to the wake alarm callback.
+static void *sAlarmCallbackData;
+
+static JavaVMAttachArgs sAttachArgs = {
+  .version = JNI_VERSION_1_6,
+  .name = "bluedroid wake/alarm thread",
+  .group = NULL
+};
+
+static bool set_wake_alarm_callout(uint64_t delay_millis, bool should_wake, alarm_cb cb, void *data) {
+    JNIEnv *env;
+    JavaVM *vm = AndroidRuntime::getJavaVM();
+    jint status = vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+
+    if (status != JNI_OK && status != JNI_EDETACHED) {
+        ALOGE("%s unable to get environment for JNI call", __func__);
+        return false;
+    }
+
+    if (status == JNI_EDETACHED && vm->AttachCurrentThread(&env, &sAttachArgs) != 0) {
+        ALOGE("%s unable to attach thread to VM", __func__);
+        return false;
+    }
+
+    sAlarmCallback = cb;
+    sAlarmCallbackData = data;
+
+    jboolean jshould_wake = should_wake ? JNI_TRUE : JNI_FALSE;
+    jboolean ret = env->CallBooleanMethod(sJniAdapterServiceObj, method_setWakeAlarm, (jlong)delay_millis, jshould_wake);
+    if (!ret) {
+        sAlarmCallback = NULL;
+        sAlarmCallbackData = NULL;
+    }
+
+    if (status == JNI_EDETACHED) {
+        vm->DetachCurrentThread();
+    }
+
+    return !!ret;
+}
+
+static int acquire_wake_lock_callout(const char *lock_name) {
+    JNIEnv *env;
+    JavaVM *vm = AndroidRuntime::getJavaVM();
+    jint status = vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+
+    if (status != JNI_OK && status != JNI_EDETACHED) {
+        ALOGE("%s unable to get environment for JNI call", __func__);
+        return BT_STATUS_FAIL;
+    }
+
+    if (status == JNI_EDETACHED && vm->AttachCurrentThread(&env, &sAttachArgs) != 0) {
+        ALOGE("%s unable to attach thread to VM", __func__);
+        return BT_STATUS_FAIL;
+    }
+
+    jboolean ret = JNI_FALSE;
+    jstring lock_name_jni = env->NewStringUTF(lock_name);
+    if (lock_name_jni) {
+        ret = env->CallBooleanMethod(sJniAdapterServiceObj, method_acquireWakeLock, lock_name_jni);
+        env->DeleteLocalRef(lock_name_jni);
+    } else {
+        ALOGE("%s unable to allocate string: %s", __func__, lock_name);
+    }
+
+    if (status == JNI_EDETACHED) {
+        vm->DetachCurrentThread();
+    }
+
+    return ret ? BT_STATUS_SUCCESS : BT_STATUS_FAIL;
+}
+
+static int release_wake_lock_callout(const char *lock_name) {
+    JNIEnv *env;
+    JavaVM *vm = AndroidRuntime::getJavaVM();
+    jint status = vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+
+    if (status != JNI_OK && status != JNI_EDETACHED) {
+        ALOGE("%s unable to get environment for JNI call", __func__);
+        return BT_STATUS_FAIL;
+    }
+
+    if (status == JNI_EDETACHED && vm->AttachCurrentThread(&env, &sAttachArgs) != 0) {
+        ALOGE("%s unable to attach thread to VM", __func__);
+        return BT_STATUS_FAIL;
+    }
+
+    jboolean ret = JNI_FALSE;
+    jstring lock_name_jni = env->NewStringUTF(lock_name);
+    if (lock_name_jni) {
+        ret = env->CallBooleanMethod(sJniAdapterServiceObj, method_releaseWakeLock, lock_name_jni);
+        env->DeleteLocalRef(lock_name_jni);
+    } else {
+        ALOGE("%s unable to allocate string: %s", __func__, lock_name);
+    }
+
+    if (status == JNI_EDETACHED) {
+        vm->DetachCurrentThread();
+    }
+
+    return ret ? BT_STATUS_SUCCESS : BT_STATUS_FAIL;
+}
+
+// Called by Java code when alarm is fired. A wake lock is held by the caller
+// over the duration of this callback.
+static void alarmFiredNative(JNIEnv *env, jobject obj) {
+    if (sAlarmCallback) {
+        sAlarmCallback(sAlarmCallbackData);
+    } else {
+        ALOGE("%s() - Alarm fired with callback not set!", __FUNCTION__);
+    }
+}
+
+static void remote_mas_instances_callback(bt_status_t status, bt_bdaddr_t *bd_addr,
+                                          int num_instances, btmce_mas_instance_t *instances)
+{
+    if (!checkCallbackThread()) {
+       ALOGE("Callback: '%s' is not called on the correct thread", __FUNCTION__);
+       return;
+    }
+
+    ALOGV("%s: Status is: %d, Instances: %d", __FUNCTION__, status, num_instances);
+
+    if (status != BT_STATUS_SUCCESS) {
+        ALOGE("%s: Status %d is incorrect", __FUNCTION__, status);
+        return;
+    }
+
+    callbackEnv->PushLocalFrame(ADDITIONAL_NREFS);
+
+    jbyteArray addr = NULL;
+    jobjectArray a_name = NULL;
+    jintArray a_scn = NULL;
+    jintArray a_masid = NULL;
+    jintArray a_msgtype = NULL;
+    jclass mclass;
+
+    mclass = callbackEnv->FindClass("java/lang/String");
+
+    addr = callbackEnv->NewByteArray(sizeof(bt_bdaddr_t));
+    if (addr == NULL) goto clean;
+
+    callbackEnv->SetByteArrayRegion(addr, 0, sizeof(bt_bdaddr_t), (jbyte*)bd_addr);
+
+    a_name = callbackEnv->NewObjectArray(num_instances, mclass, NULL);
+    if (a_name == NULL) goto clean;
+
+    a_scn = callbackEnv->NewIntArray(num_instances);
+    if (a_scn == NULL) goto clean;
+
+    a_masid = callbackEnv->NewIntArray(num_instances);
+    if (a_masid == NULL) goto clean;
+
+    a_msgtype = callbackEnv->NewIntArray(num_instances);
+    if (a_msgtype == NULL) goto clean;
+
+    for (int i = 0; i < num_instances; i++) {
+        jstring name = callbackEnv->NewStringUTF(instances[i].p_name);
+
+        callbackEnv->SetObjectArrayElement(a_name, i, name);
+        callbackEnv->SetIntArrayRegion(a_scn, i, 1, &instances[i].scn);
+        callbackEnv->SetIntArrayRegion(a_masid, i, 1, &instances[i].id);
+        callbackEnv->SetIntArrayRegion(a_msgtype, i, 1, &instances[i].msg_types);
+
+        callbackEnv->DeleteLocalRef(name);
+    }
+
+    callbackEnv->CallVoidMethod(sJniCallbacksObj, method_deviceMasInstancesFoundCallback,
+            (jint) status, addr, a_name, a_scn, a_masid, a_msgtype);
+    checkAndClearExceptionFromCallback(callbackEnv, __FUNCTION__);
+
+clean:
+    if (addr != NULL) callbackEnv->DeleteLocalRef(addr);
+    if (a_name != NULL) callbackEnv->DeleteLocalRef(a_name);
+    if (a_scn != NULL) callbackEnv->DeleteLocalRef(a_scn);
+    if (a_masid != NULL) callbackEnv->DeleteLocalRef(a_masid);
+    if (a_msgtype != NULL) callbackEnv->DeleteLocalRef(a_msgtype);
+    callbackEnv->PopLocalFrame(NULL);
+}
+
+static bt_os_callouts_t sBluetoothOsCallouts = {
+    sizeof(sBluetoothOsCallouts),
+    set_wake_alarm_callout,
+    acquire_wake_lock_callout,
+    release_wake_lock_callout,
+};
+
+static btmce_callbacks_t sBluetoothMceCallbacks = {
+    sizeof(sBluetoothMceCallbacks),
+    remote_mas_instances_callback,
 };
 
 static void classInitNative(JNIEnv* env, jclass clazz) {
@@ -510,6 +710,15 @@ static void classInitNative(JNIEnv* env, jclass clazz) {
 
     method_aclStateChangeCallback = env->GetMethodID(jniCallbackClass,
                                                     "aclStateChangeCallback", "(I[BI)V");
+
+    method_setWakeAlarm = env->GetMethodID(clazz, "setWakeAlarm", "(JZ)Z");
+    method_acquireWakeLock = env->GetMethodID(clazz, "acquireWakeLock", "(Ljava/lang/String;)Z");
+    method_releaseWakeLock = env->GetMethodID(clazz, "releaseWakeLock", "(Ljava/lang/String;)Z");
+    method_deviceMasInstancesFoundCallback = env->GetMethodID(jniCallbackClass,
+                                                    "deviceMasInstancesFoundCallback",
+                                                    "(I[B[Ljava/lang/String;[I[I[I)V");
+    method_energyInfo = env->GetMethodID(clazz, "energyInfoCallback", "(IIJJJJ)V");
+
     char value[PROPERTY_VALUE_MAX];
     property_get("bluetooth.mock_stack", value, "");
 
@@ -534,19 +743,39 @@ static void classInitNative(JNIEnv* env, jclass clazz) {
 static bool initNative(JNIEnv* env, jobject obj) {
     ALOGV("%s:",__FUNCTION__);
 
+    sJniAdapterServiceObj = env->NewGlobalRef(obj);
     sJniCallbacksObj = env->NewGlobalRef(env->GetObjectField(obj, sJniCallbacksField));
 
     if (sBluetoothInterface) {
         int ret = sBluetoothInterface->init(&sBluetoothCallbacks);
         if (ret != BT_STATUS_SUCCESS) {
-            ALOGE("Error while setting the callbacks \n");
+            ALOGE("Error while setting the callbacks: %d\n", ret);
             sBluetoothInterface = NULL;
             return JNI_FALSE;
         }
+        ret = sBluetoothInterface->set_os_callouts(&sBluetoothOsCallouts);
+        if (ret != BT_STATUS_SUCCESS) {
+            ALOGE("Error while setting Bluetooth callouts: %d\n", ret);
+            sBluetoothInterface->cleanup();
+            sBluetoothInterface = NULL;
+            return JNI_FALSE;
+        }
+
         if ( (sBluetoothSocketInterface = (btsock_interface_t *)
                   sBluetoothInterface->get_profile_interface(BT_PROFILE_SOCKETS_ID)) == NULL) {
                 ALOGE("Error getting socket interface");
         }
+
+        if ( (sBluetoothMceInterface = (btmce_interface_t *)
+                  sBluetoothInterface->get_profile_interface(BT_PROFILE_MAP_CLIENT_ID)) == NULL) {
+                ALOGE("Error getting mapclient interface");
+        } else {
+            if ( (sBluetoothMceInterface->init(&sBluetoothMceCallbacks)) != BT_STATUS_SUCCESS) {
+                ALOGE("Failed to initialize Bluetooth MCE");
+                sBluetoothMceInterface = NULL;
+            }
+        }
+
         return JNI_TRUE;
     }
     return JNI_FALSE;
@@ -562,6 +791,7 @@ static bool cleanupNative(JNIEnv *env, jobject obj) {
     ALOGI("%s: return from cleanup",__FUNCTION__);
 
     env->DeleteGlobalRef(sJniCallbacksObj);
+    env->DeleteGlobalRef(sJniAdapterServiceObj);
     return JNI_TRUE;
 }
 
@@ -613,7 +843,7 @@ static jboolean cancelDiscoveryNative(JNIEnv* env, jobject obj) {
     return result;
 }
 
-static jboolean createBondNative(JNIEnv* env, jobject obj, jbyteArray address) {
+static jboolean createBondNative(JNIEnv* env, jobject obj, jbyteArray address, jint transport) {
     ALOGV("%s:",__FUNCTION__);
 
     jbyte *addr;
@@ -627,7 +857,7 @@ static jboolean createBondNative(JNIEnv* env, jobject obj, jbyteArray address) {
         return result;
     }
 
-    int ret = sBluetoothInterface->create_bond((bt_bdaddr_t *)addr);
+    int ret = sBluetoothInterface->create_bond((bt_bdaddr_t *)addr, transport);
     env->ReleaseByteArrayElements(address, addr, 0);
     result = (ret == BT_STATUS_SUCCESS) ? JNI_TRUE : JNI_FALSE;
 
@@ -672,6 +902,22 @@ static jboolean cancelBondNative(JNIEnv* env, jobject obj, jbyteArray address) {
     result = (ret == BT_STATUS_SUCCESS) ? JNI_TRUE : JNI_FALSE;
 
     return result;
+}
+
+static jboolean isConnectedNative(JNIEnv* env, jobject obj, jbyteArray address) {
+    ALOGV("%s:",__FUNCTION__);
+    if (!sBluetoothInterface) return JNI_FALSE;
+
+    jbyte *addr = env->GetByteArrayElements(address, NULL);
+    if (addr == NULL) {
+        jniThrowIOException(env, EINVAL);
+        return JNI_FALSE;
+    }
+
+    int ret = sBluetoothInterface->get_connection_state((bt_bdaddr_t *)addr);
+    env->ReleaseByteArrayElements(address, addr, 0);
+
+    return (ret != 0 ? JNI_TRUE : JNI_FALSE);
 }
 
 static jboolean pinReplyNative(JNIEnv *env, jobject obj, jbyteArray address, jboolean accept,
@@ -829,6 +1075,67 @@ static jboolean setDevicePropertyNative(JNIEnv *env, jobject obj, jbyteArray add
     return result;
 }
 
+static int getSocketOptNative(JNIEnv *env, jobject obj, jint type, jint channel, jint optionName,
+                                        jbyteArray optionVal) {
+    ALOGV("%s:",__FUNCTION__);
+
+    jbyte *option_val = NULL;
+    int option_len;
+    bt_status_t status;
+
+    if (!sBluetoothSocketInterface) return -1;
+
+    option_val = env->GetByteArrayElements(optionVal, NULL);
+    if (option_val == NULL) {
+        ALOGE("getSocketOptNative :jniThrowIOException ");
+        jniThrowIOException(env, EINVAL);
+        return -1;
+    }
+
+    if ( (status = sBluetoothSocketInterface->get_sock_opt((btsock_type_t)type, channel,
+         (btsock_option_type_t) optionName, (void *) option_val, &option_len)) !=
+                                                           BT_STATUS_SUCCESS) {
+        ALOGE("get_sock_opt failed: %d", status);
+        goto Fail;
+    }
+    env->ReleaseByteArrayElements(optionVal, option_val, 0);
+
+    return option_len;
+Fail:
+    env->ReleaseByteArrayElements(optionVal, option_val, 0);
+    return -1;
+}
+
+static int setSocketOptNative(JNIEnv *env, jobject obj, jint type, jint channel, jint optionName,
+                                        jbyteArray optionVal, jint optionLen) {
+    ALOGV("%s:",__FUNCTION__);
+
+    jbyte *option_val = NULL;
+    bt_status_t status;
+
+    if (!sBluetoothSocketInterface) return -1;
+
+    option_val = env->GetByteArrayElements(optionVal, NULL);
+    if (option_val == NULL) {
+        ALOGE("setSocketOptNative:jniThrowIOException ");
+        jniThrowIOException(env, EINVAL);
+        return -1;
+    }
+
+    if ( (status = sBluetoothSocketInterface->set_sock_opt((btsock_type_t)type, channel,
+         (btsock_option_type_t) optionName, (void *) option_val, optionLen)) !=
+                                                         BT_STATUS_SUCCESS) {
+        ALOGE("set_sock_opt failed: %d", status);
+        goto Fail;
+    }
+    env->ReleaseByteArrayElements(optionVal, option_val, 0);
+
+    return 0;
+Fail:
+    env->ReleaseByteArrayElements(optionVal, option_val, 0);
+    return -1;
+}
+
 static jboolean getRemoteServicesNative(JNIEnv *env, jobject obj, jbyteArray address) {
     ALOGV("%s:",__FUNCTION__);
 
@@ -844,6 +1151,25 @@ static jboolean getRemoteServicesNative(JNIEnv *env, jobject obj, jbyteArray add
 
     int ret = sBluetoothInterface->get_remote_services((bt_bdaddr_t *)addr);
     env->ReleaseByteArrayElements(address, addr, 0);
+    result = (ret == BT_STATUS_SUCCESS) ? JNI_TRUE : JNI_FALSE;
+    return result;
+}
+
+static jboolean getRemoteMasInstancesNative(JNIEnv *env, jobject obj, jbyteArray address) {
+    ALOGV("%s:",__FUNCTION__);
+
+    jbyte *addr = NULL;
+    jboolean result = JNI_FALSE;
+    if (!sBluetoothMceInterface) return result;
+
+    addr = env->GetByteArrayElements(address, NULL);
+    if (addr == NULL) {
+        jniThrowIOException(env, EINVAL);
+        return result;
+    }
+
+    int ret = sBluetoothMceInterface->get_remote_mas_instances((bt_bdaddr_t *)addr);
+    env->ReleaseByteArrayElements(address, addr, NULL);
     result = (ret == BT_STATUS_SUCCESS) ? JNI_TRUE : JNI_FALSE;
     return result;
 }
@@ -899,6 +1225,8 @@ static int createSocketChannelNative(JNIEnv *env, jobject object, jint type,
 
     if (!sBluetoothSocketInterface) return -1;
 
+    ALOGV("%s: SOCK FLAG = %x", __FUNCTION__, flag);
+
     service_name = env->GetStringUTFChars(name_str, NULL);
 
     uuid = env->GetByteArrayElements(uuidObj, NULL);
@@ -906,7 +1234,6 @@ static int createSocketChannelNative(JNIEnv *env, jobject object, jint type,
         ALOGE("failed to get uuid");
         goto Fail;
     }
-    ALOGE("SOCK FLAG = %x ***********************",flag);
     if ( (status = sBluetoothSocketInterface->listen((btsock_type_t) type, service_name,
                        (const uint8_t*) uuid, channel, &socket_fd, flag)) != BT_STATUS_SUCCESS) {
         ALOGE("Socket listen failed: %d", status);
@@ -942,6 +1269,16 @@ static jboolean configHciSnoopLogNative(JNIEnv* env, jobject obj, jboolean enabl
     return result;
 }
 
+static int readEnergyInfo()
+{
+    ALOGV("%s:",__FUNCTION__);
+    jboolean result = JNI_FALSE;
+    if (!sBluetoothInterface) return result;
+    int ret = sBluetoothInterface->read_energy_info();
+    result = (ret == BT_STATUS_SUCCESS) ? JNI_TRUE : JNI_FALSE;
+    return result;
+}
+
 static JNINativeMethod sMethods[] = {
     /* name, signature, funcPtr */
     {"classInitNative", "()V", (void *) classInitNative},
@@ -956,16 +1293,20 @@ static JNINativeMethod sMethods[] = {
     {"setDevicePropertyNative", "([BI[B)Z", (void*) setDevicePropertyNative},
     {"startDiscoveryNative", "()Z", (void*) startDiscoveryNative},
     {"cancelDiscoveryNative", "()Z", (void*) cancelDiscoveryNative},
-    {"createBondNative", "([B)Z", (void*) createBondNative},
+    {"createBondNative", "([BI)Z", (void*) createBondNative},
     {"removeBondNative", "([B)Z", (void*) removeBondNative},
     {"cancelBondNative", "([B)Z", (void*) cancelBondNative},
+    {"isConnectedNative", "([B)Z", (void*) isConnectedNative},
     {"pinReplyNative", "([BZI[B)Z", (void*) pinReplyNative},
     {"sspReplyNative", "([BIZI)Z", (void*) sspReplyNative},
     {"getRemoteServicesNative", "([B)Z", (void*) getRemoteServicesNative},
+    {"getRemoteMasInstancesNative", "([B)Z", (void*) getRemoteMasInstancesNative},
     {"connectSocketNative", "([BI[BII)I", (void*) connectSocketNative},
     {"createSocketChannelNative", "(ILjava/lang/String;[BII)I",
      (void*) createSocketChannelNative},
-    {"configHciSnoopLogNative", "(Z)Z", (void*) configHciSnoopLogNative}
+    {"configHciSnoopLogNative", "(Z)Z", (void*) configHciSnoopLogNative},
+    {"alarmFiredNative", "()V", (void *) alarmFiredNative},
+    {"readEnergyInfo", "()I", (void*) readEnergyInfo},
 };
 
 int register_com_android_bluetooth_btservice_AdapterService(JNIEnv* env)
@@ -1003,13 +1344,28 @@ jint JNI_OnLoad(JavaVM *jvm, void *reserved)
         return JNI_ERR;
     }
 
+    if ((status = android::register_com_android_bluetooth_hfpclient(e)) < 0) {
+        ALOGE("jni hfp client registration failure, status: %d", status);
+        return JNI_ERR;
+    }
+
     if ((status = android::register_com_android_bluetooth_a2dp(e)) < 0) {
-        ALOGE("jni a2dp registration failure: %d", status);
+        ALOGE("jni a2dp source registration failure: %d", status);
+        return JNI_ERR;
+    }
+
+    if ((status = android::register_com_android_bluetooth_a2dp_sink(e)) < 0) {
+        ALOGE("jni a2dp sink registration failure: %d", status);
         return JNI_ERR;
     }
 
     if ((status = android::register_com_android_bluetooth_avrcp(e)) < 0) {
-        ALOGE("jni avrcp registration failure: %d", status);
+        ALOGE("jni avrcp target registration failure: %d", status);
+        return JNI_ERR;
+    }
+
+    if ((status = android::register_com_android_bluetooth_avrcp_controller(e)) < 0) {
+        ALOGE("jni avrcp controller registration failure: %d", status);
         return JNI_ERR;
     }
 

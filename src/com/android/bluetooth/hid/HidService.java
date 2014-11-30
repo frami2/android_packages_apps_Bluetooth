@@ -67,11 +67,11 @@ public class HidService extends ProfileService {
     private static final int MESSAGE_SET_REPORT = 10;
     private static final int MESSAGE_SEND_DATA = 11;
     private static final int MESSAGE_ON_VIRTUAL_UNPLUG = 12;
-    private static final int MESSAGE_GET_IDLE_TIME = 13;
-    private static final int MESSAGE_ON_GET_IDLE_TIME = 14;
-    private static final int MESSAGE_SET_IDLE_TIME = 15;
-    private static final int MESSAGE_SET_PRIORITY = 16;
-
+    private static final int MESSAGE_ON_HANDSHAKE = 13;
+    private static final int MESSAGE_GET_IDLE_TIME = 14;
+    private static final int MESSAGE_ON_GET_IDLE_TIME = 15;
+    private static final int MESSAGE_SET_IDLE_TIME = 16;
+    private static final int MESSAGE_SET_PRIORITY = 17;
     static {
         classInitNative();
     }
@@ -188,13 +188,13 @@ public class HidService extends ProfileService {
                     } else {
                         broadcastConnectionState(device, convertHalState(halState));
                     }
-                    if (halState != CONN_STATE_CONNECTING) {
+                    if (halState == CONN_STATE_CONNECTED &&
+                        (mTargetDevice != null && mTargetDevice.equals(device))) {
                         mTargetDevice = null;
-                    }
-                    else {
-                        // CONN_STATE_CONNECTING is received only during
-                        // local initiated connection.
-                        mTargetDevice = device;
+                        // local device originated connection to hid device, move out
+                        // of quiet mode
+                        AdapterService adapterService = AdapterService.getAdapterService();
+                        adapterService.enable(false);
                     }
                 }
                     break;
@@ -242,6 +242,22 @@ public class HidService extends ProfileService {
                     if(!getReportNative(Utils.getByteAddress(device), reportType, reportId, bufferSize)) {
                         Log.e(TAG, "Error: get report native returns false");
                     }
+                }
+                break;
+                case MESSAGE_ON_GET_REPORT:
+                {
+                    BluetoothDevice device = getDevice((byte[])msg.obj);
+                    Bundle data = msg.getData();
+                    byte[] report = data.getByteArray(BluetoothInputDevice.EXTRA_REPORT);
+                    int bufferSize = data.getInt(BluetoothInputDevice.EXTRA_REPORT_BUFFER_SIZE);
+                    broadcastReport(device, report, bufferSize);
+                }
+                break;
+                case MESSAGE_ON_HANDSHAKE:
+                {
+                    BluetoothDevice device = getDevice((byte[])msg.obj);
+                    int status = msg.arg1;
+                    broadcastHandshake(device, status);
                 }
                 break;
                 case MESSAGE_SET_REPORT:
@@ -379,7 +395,7 @@ public class HidService extends ProfileService {
             if (service == null) return false;
             return service.sendData(device, report);
         }
-// @daniel
+
         public boolean setIdleTime(BluetoothDevice device, byte idleTime) {
             HidService service = getService();
             if (service == null) return false;
@@ -391,7 +407,6 @@ public class HidService extends ProfileService {
             if (service == null) return false;
             return service.getIdleTime(device);
         }
-// @
     };
 
     //APIs
@@ -554,7 +569,7 @@ public class HidService extends ProfileService {
         mHandler.sendMessage(msg);
         return true ;*/
     }
-// @daniel
+
     boolean getIdleTime(BluetoothDevice device) {
         enforceCallingOrSelfPermission(BLUETOOTH_ADMIN_PERM,
                                        "Need BLUETOOTH_ADMIN permission");
@@ -582,11 +597,28 @@ public class HidService extends ProfileService {
         mHandler.sendMessage(msg);
         return true;
     }
-// @
+
     private void onGetProtocolMode(byte[] address, int mode) {
         Message msg = mHandler.obtainMessage(MESSAGE_ON_GET_PROTOCOL_MODE);
         msg.obj = address;
         msg.arg1 = mode;
+        mHandler.sendMessage(msg);
+    }
+
+    private void onGetReport(byte[] address, byte[] report, int rpt_size) {
+        Message msg = mHandler.obtainMessage(MESSAGE_ON_GET_REPORT);
+        msg.obj = address;
+        Bundle data = new Bundle();
+        data.putByteArray(BluetoothInputDevice.EXTRA_REPORT, report);
+        data.putInt(BluetoothInputDevice.EXTRA_REPORT_BUFFER_SIZE, rpt_size);
+        msg.setData(data);
+        mHandler.sendMessage(msg);
+    }
+
+    private void onHandshake(byte[] address, int status) {
+        Message msg = mHandler.obtainMessage(MESSAGE_ON_HANDSHAKE);
+        msg.obj = address;
+        msg.arg1 = status;
         mHandler.sendMessage(msg);
     }
 
@@ -629,6 +661,14 @@ public class HidService extends ProfileService {
         sendBroadcast(intent, BLUETOOTH_PERM);
     }
 
+    private void broadcastHandshake(BluetoothDevice device, int status) {
+        Intent intent = new Intent(BluetoothInputDevice.ACTION_HANDSHAKE);
+        intent.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+        intent.putExtra(BluetoothInputDevice.EXTRA_STATUS, status);
+        intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+        sendBroadcast(intent, BLUETOOTH_PERM);
+    }
+
     private void broadcastProtocolMode(BluetoothDevice device, int protocolMode) {
         Intent intent = new Intent(BluetoothInputDevice.ACTION_PROTOCOL_MODE_CHANGED);
         intent.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
@@ -636,6 +676,15 @@ public class HidService extends ProfileService {
         intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
         sendBroadcast(intent, BLUETOOTH_PERM);
         if (DBG) log("Protocol Mode (" + device + "): " + protocolMode);
+    }
+
+    private void broadcastReport(BluetoothDevice device, byte[] report, int rpt_size) {
+        Intent intent = new Intent(BluetoothInputDevice.ACTION_REPORT);
+        intent.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+        intent.putExtra(BluetoothInputDevice.EXTRA_REPORT, report);
+        intent.putExtra(BluetoothInputDevice.EXTRA_REPORT_BUFFER_SIZE, rpt_size);
+        intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+        sendBroadcast(intent, BLUETOOTH_PERM);
     }
 
     private void broadcastVirtualUnplugStatus(BluetoothDevice device, int status) {

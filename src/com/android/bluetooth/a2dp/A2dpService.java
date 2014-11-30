@@ -23,6 +23,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.provider.Settings;
 import android.util.Log;
+import com.android.bluetooth.avrcp.Avrcp;
 import com.android.bluetooth.btservice.ProfileService;
 import com.android.bluetooth.Utils;
 import java.util.ArrayList;
@@ -58,8 +59,12 @@ public class A2dpService extends ProfileService {
     }
 
     protected boolean stop() {
-        mStateMachine.doQuit();
-        mAvrcp.doQuit();
+        if (mStateMachine != null) {
+            mStateMachine.doQuit();
+        }
+        if (mAvrcp != null) {
+            mAvrcp.doQuit();
+        }
         return true;
     }
 

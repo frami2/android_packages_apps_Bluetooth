@@ -78,10 +78,6 @@ final class A2dpStateMachine extends StateMachine {
 
     private static final int MSG_CONNECTION_STATE_CHANGED = 0;
 
-    private static final ParcelUuid[] A2DP_UUIDS = {
-        BluetoothUuid.AudioSink
-    };
-
     // mCurrentDevice is the device connected before the state changes
     // mTargetDevice is the device to be connected
     // mIncomingDevice is the device connecting to us, valid only in Pending state
@@ -567,6 +563,7 @@ final class A2dpStateMachine extends StateMachine {
                                             BluetoothA2dp.STATE_NOT_PLAYING);
                     }
                     break;
+                case AUDIO_STATE_REMOTE_SUSPEND:
                 case AUDIO_STATE_STOPPED:
                     if (mPlayingA2dpDevice != null) {
                         mPlayingA2dpDevice = null;
@@ -617,7 +614,8 @@ final class A2dpStateMachine extends StateMachine {
     List<BluetoothDevice> getConnectedDevices() {
         List<BluetoothDevice> devices = new ArrayList<BluetoothDevice>();
         synchronized(this) {
-            if (getCurrentState() == mConnected) {
+            /* If connected and mCurrentDevice is not null*/
+            if ((getCurrentState() == mConnected) && (mCurrentDevice != null)) {
                 devices.add(mCurrentDevice);
             }
         }
@@ -661,7 +659,7 @@ final class A2dpStateMachine extends StateMachine {
 
         for (BluetoothDevice device : bondedDevices) {
             ParcelUuid[] featureUuids = device.getUuids();
-            if (!BluetoothUuid.containsAnyUuid(featureUuids, A2DP_UUIDS)) {
+            if (!BluetoothUuid.isUuidPresent(featureUuids, BluetoothUuid.AudioSink)) {
                 continue;
             }
             connectionState = getConnectionState(device);
@@ -678,7 +676,8 @@ final class A2dpStateMachine extends StateMachine {
     // This method does not check for error conditon (newState == prevState)
     private void broadcastConnectionState(BluetoothDevice device, int newState, int prevState) {
 
-        int delay = mAudioManager.setBluetoothA2dpDeviceConnectionState(device, newState);
+        int delay = mAudioManager.setBluetoothA2dpDeviceConnectionState(device, newState,
+                BluetoothProfile.A2DP);
 
         mWakeLock.acquire();
         mIntentBroadcastHandler.sendMessageDelayed(mIntentBroadcastHandler.obtainMessage(
