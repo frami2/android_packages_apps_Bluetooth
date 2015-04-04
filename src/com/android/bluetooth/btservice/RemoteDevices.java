@@ -19,8 +19,8 @@ package com.android.bluetooth.btservice;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothRemoteDiRecord;
 import android.bluetooth.BluetoothMasInstance;
+import android.bluetooth.BluetoothRemoteDiRecord;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Handler;
@@ -202,6 +202,23 @@ final class RemoteDevices {
         }
 
         /**
+         * @param mBondState the mBondState to set
+         */
+        void setBondState(int mBondState) {
+            synchronized (mObject) {
+                this.mBondState = mBondState;
+                if (mBondState == BluetoothDevice.BOND_NONE)
+                {
+                    /* Clearing the Uuids local copy when the device is unpaired. If not cleared,
+                    cachedBluetoothDevice issued a connect using the local cached copy of uuids,
+                    without waiting for the ACTION_UUID intent.
+                    This was resulting in multiple calls to connect().*/
+                    mUuids = null;
+                }
+            }
+        }
+
+        /**
          * @return the mtrustValue
          */
         boolean getTrust() {
@@ -226,23 +243,6 @@ final class RemoteDevices {
         }
 
         /**
-         * @param mBondState the mBondState to set
-         */
-        void setBondState(int mBondState) {
-            synchronized (mObject) {
-                this.mBondState = mBondState;
-                if (mBondState == BluetoothDevice.BOND_NONE)
-                {
-                    /* Clearing the Uuids local copy when the device is unpaired. If not cleared,
-                    cachedBluetoothDevice issued a connect using the local cached copy of uuids,
-                    without waiting for the ACTION_UUID intent.
-                    This was resulting in multiple calls to connect().*/
-                    mUuids = null;
-                }
-            }
-        }
-
-        /**
          * @return the mBondState
          */
         int getBondState() {
@@ -258,27 +258,6 @@ final class RemoteDevices {
             synchronized (mObject) {
                 Log.d(TAG, "getRemoteDiRecord: " + mDiRecord);
                 return mDiRecord;
-            }
-        }
-
-        /**
-         * @param byte array contains di record
-         */
-        void updateRemoteDiRecord(byte[] val) {
-            int vendorId, vendorIdSource, productId, productVersion, specificationId;
-            synchronized (mObject) {
-                vendorId = Utils.byteArrayToInt(val);
-                vendorIdSource = Utils.byteArrayToInt(val, 4);
-                productId = Utils.byteArrayToInt(val, 8);
-                productVersion = Utils.byteArrayToInt(val, 12);
-                specificationId = Utils.byteArrayToInt(val, 16);
-
-                mDiRecord = new BluetoothRemoteDiRecord(vendorId, vendorIdSource, productId,
-                                    productVersion, specificationId);
-
-                Log.d(TAG, "VendorID: " + vendorId + " VendorIdSrc: " + vendorIdSource +
-                     " ProductID: " + productId + " ProductVersion: " + productVersion +
-                     " SpecificationId: " + specificationId);
             }
         }
     }

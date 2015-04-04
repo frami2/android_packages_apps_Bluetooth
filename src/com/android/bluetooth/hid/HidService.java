@@ -71,7 +71,7 @@ public class HidService extends ProfileService {
     private static final int MESSAGE_GET_IDLE_TIME = 14;
     private static final int MESSAGE_ON_GET_IDLE_TIME = 15;
     private static final int MESSAGE_SET_IDLE_TIME = 16;
-    private static final int MESSAGE_SET_PRIORITY = 17;
+
     static {
         classInitNative();
     }
@@ -278,6 +278,23 @@ public class HidService extends ProfileService {
                     String report = data.getString(BluetoothInputDevice.EXTRA_REPORT);
                     if(!sendDataNative(Utils.getByteAddress(device), report)) {
                         Log.e(TAG, "Error: send data native returns false");
+                    }
+                }
+                break;
+                case MESSAGE_ON_GET_IDLE_TIME:
+                {
+                    BluetoothDevice device = getDevice((byte[]) msg.obj);
+                    int idleTime = msg.arg1;
+                    broadcastIdleTime(device, idleTime);
+                }
+                break;
+                case MESSAGE_SET_IDLE_TIME:
+                {
+                    BluetoothDevice device = (BluetoothDevice) msg.obj;
+                    Bundle data = msg.getData();
+                    byte idleTime = data.getByte(BluetoothInputDevice.EXTRA_IDLE_TIME);
+                    if(!setIdleTimeNative(Utils.getByteAddress(device), idleTime)) {
+                        Log.e(TAG, "Error: get idle time native returns false");
                     }
                 }
                 break;
@@ -605,6 +622,13 @@ public class HidService extends ProfileService {
         mHandler.sendMessage(msg);
     }
 
+    private void onGetIdleTime(byte[] address, int idleTime) {
+        Message msg = mHandler.obtainMessage(MESSAGE_ON_GET_IDLE_TIME);
+        msg.obj = address;
+        msg.arg1 = idleTime;
+        mHandler.sendMessage(msg);
+    }
+
     private void onGetReport(byte[] address, byte[] report, int rpt_size) {
         Message msg = mHandler.obtainMessage(MESSAGE_ON_GET_REPORT);
         msg.obj = address;
@@ -695,6 +719,15 @@ public class HidService extends ProfileService {
         sendBroadcast(intent, BLUETOOTH_PERM);
     }
 
+    private void broadcastIdleTime(BluetoothDevice device, int idleTime) {
+        Intent intent = new Intent(BluetoothInputDevice.ACTION_IDLE_TIME_CHANGED);
+        intent.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+        intent.putExtra(BluetoothInputDevice.EXTRA_IDLE_TIME, idleTime);
+        intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+        sendBroadcast(intent, BLUETOOTH_PERM);
+        if (DBG) log("Idle time (" + device + "): " + idleTime);
+    }
+
     private boolean okToConnect(BluetoothDevice device) {
         AdapterService adapterService = AdapterService.getAdapterService();
         //check if it is inbound connection in Quiet mode, priority and Bond status
@@ -723,6 +756,16 @@ public class HidService extends ProfileService {
         }
     }
 
+    @Override
+    public void dump(StringBuilder sb) {
+        super.dump(sb);
+        println(sb, "mTargetDevice: " + mTargetDevice);
+        println(sb, "mInputDevices:");
+        for (BluetoothDevice device : mInputDevices.keySet()) {
+            println(sb, "  " + device + " : " + mInputDevices.get(device));
+        }
+    }
+
     // Constants matching Hal header file bt_hh.h
     // bthh_connection_state_t
     private final static int CONN_STATE_CONNECTED = 0;
@@ -741,4 +784,6 @@ public class HidService extends ProfileService {
     private native boolean getReportNative(byte[]btAddress, byte reportType, byte reportId, int bufferSize);
     private native boolean setReportNative(byte[] btAddress, byte reportType, String report);
     private native boolean sendDataNative(byte[] btAddress, String report);
+    private native boolean setIdleTimeNative(byte[] btAddress, byte idleTime);
+    private native boolean getIdleTimeNative(byte[] btAddress);
 }
