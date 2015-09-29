@@ -237,12 +237,15 @@ public class BluetoothMapbMessageMmsEmail extends BluetoothMapbMessage {
         return includeAttachments;
     }
     public void updateCharset() {
-        charset = null;
-        for(MimePart part : parts) {
-            if(part.contentType != null &&
-               part.contentType.toUpperCase().contains("TEXT")) {
-                charset = "UTF-8";
-                break;
+        if(parts != null) {
+            mCharset = null;
+            for(MimePart part : parts) {
+                if(part.contentType != null &&
+                   part.contentType.toUpperCase().contains("TEXT")) {
+                    mCharset = "UTF-8";
+                    if(V) Log.v(TAG,"Charset set to UTF-8");
+                    break;
+                }
             }
         }
     }
