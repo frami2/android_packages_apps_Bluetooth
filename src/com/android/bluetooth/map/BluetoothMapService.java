@@ -95,12 +95,14 @@ public class BluetoothMapService extends ProfileService {
 
     public static final int MSG_SESSION_DISCONNECTED = 5002;
 
-    public static final int MSG_MAS_CONNECT = 5003; // Send at MAS connect, including the MAS_ID
-    public static final int MSG_MAS_CONNECT_CANCEL = 5004; // Send at auth. declined
+    public static final int MSG_OBEX_AUTH_CHALL = 5003;
 
-    public static final int MSG_ACQUIRE_WAKE_LOCK = 5005;
+    public static final int MSG_MAS_CONNECT = 5004; // Send at MAS connect, including the MAS_ID
+    public static final int MSG_MAS_CONNECT_CANCEL = 5005; // Send at auth. declined
 
-    public static final int MSG_RELEASE_WAKE_LOCK = 5006;
+    public static final int MSG_ACQUIRE_WAKE_LOCK = 5006;
+
+    public static final int MSG_RELEASE_WAKE_LOCK = 5007;
 
     private static final String BLUETOOTH_PERM = android.Manifest.permission.BLUETOOTH;
 
